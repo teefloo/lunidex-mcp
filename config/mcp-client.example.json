@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lunidex": {
+      "command": "node",
+      "args": ["/absolute/path/to/lunidex-mcp/dist/index.js"],
+      "env": {
+        "LUNIDEX_API_KEY": "REPLACE_WITH_YOUR_LUNIDEX_API_KEY"
+      }
+    }
+  }
+}
