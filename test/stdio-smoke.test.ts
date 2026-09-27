@@ -44,6 +44,12 @@ test('starts the stdio server and lists/calls tools and a public resource agains
       return;
     }
 
+    if (request.method === 'PUT' && request.url === '/api/v1/cards/base1-001') {
+      response.writeHead(200);
+      response.end(JSON.stringify({ data: { saved: true } }));
+      return;
+    }
+
     if (request.method === 'GET' && request.url === '/api/v1/openapi.json') {
       response.writeHead(200);
       response.end(
@@ -87,9 +93,11 @@ test('starts the stdio server and lists/calls tools and a public resource agains
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 9);
+    assert.equal(tools.length, 13);
     assert.ok(tools.some((tool) => tool.name === 'get_me'));
     assert.ok(tools.some((tool) => tool.name === 'get_sealed_transaction'));
+    assert.ok(tools.some((tool) => tool.name === 'set_card_quantity'));
+    assert.ok(tools.some((tool) => tool.name === 'create_sealed_transaction'));
 
     const { resources } = await client.listResources();
     assert.deepEqual(resources.map((resource) => resource.uri), ['lunidex://api/openapi']);
@@ -108,6 +116,12 @@ test('starts the stdio server and lists/calls tools and a public resource agains
       meta: { source: 'local-mock' },
     });
 
+    const cardWrite = await client.callTool({
+      name: 'set_card_quantity',
+      arguments: { cardId: 'base1-001', language: 'en', variant: 'normal', quantity: 2 },
+    });
+    assert.equal(cardWrite.isError ?? false, false);
+
     const unauthorized = await client.callTool({ name: 'get_summary', arguments: {} });
     const errorText = textContent(unauthorized);
     assert.equal(unauthorized.isError, true);
@@ -123,8 +137,7 @@ test('starts the stdio server and lists/calls tools and a public resource agains
     assert.equal(openApiDocument.openapi, '3.1.0');
     assert.equal(JSON.stringify(openApiDocument).includes(mockBearer), false);
 
-    assert.equal(receivedRequests.length, 3);
-    assert.ok(receivedRequests.every((request) => request.method === 'GET'));
+    assert.equal(receivedRequests.length, 4);
     assert.ok(
       receivedRequests
         .filter((request) => request.path !== '/api/v1/openapi.json')
@@ -136,6 +149,11 @@ test('starts the stdio server and lists/calls tools and a public resource agains
     );
     assert.ok(receivedRequests.some((request) => request.path === '/api/v1/me'));
     assert.ok(receivedRequests.some((request) => request.path === '/api/v1/summary'));
+    assert.ok(
+      receivedRequests.some(
+        (request) => request.method === 'PUT' && request.path === '/api/v1/cards/base1-001',
+      ),
+    );
   } finally {
     await client.close();
     await new Promise<void>((resolve, reject) => {

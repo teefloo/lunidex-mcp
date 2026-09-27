@@ -29,7 +29,7 @@ function textContent(result: { content: Array<{ type: string; text?: string }> }
   return item.text;
 }
 
-test('registers only the nine verified read-only API tools', async () => {
+test('registers the nine read tools and four verified write tools', async () => {
   const api = new LunidexApiClient({});
   const session = await connectInMemory(api);
   try {
@@ -46,9 +46,12 @@ test('registers only the nine verified read-only API tools', async () => {
         'get_sealed_position',
         'list_sealed_transactions',
         'get_sealed_transaction',
+        'set_card_quantity',
+        'create_sealed_transaction',
+        'update_sealed_transaction',
+        'void_sealed_transaction',
       ],
     );
-    assert.equal(tools.some((tool) => /write|update|delete|void/i.test(tool.name)), false);
   } finally {
     await session.close();
   }
@@ -143,6 +146,160 @@ test('maps every read-only MCP tool to its verified Lunidex API route and query'
         query: {},
       },
     ]);
+  } finally {
+    await session.close();
+  }
+});
+
+test('maps write tools to the verified Lunidex routes and optimistic revision fields', async () => {
+  const requests: Array<{
+    method: string;
+    pathname: string;
+    body: unknown;
+    authorization: string | null;
+    idempotencyKey: string | null;
+  }> = [];
+  const apiKey = 'write-test-key';
+  const api = new LunidexApiClient(
+    {
+      LUNIDEX_API_KEY: apiKey,
+      LUNIDEX_API_BASE_URL: 'http://127.0.0.1:43121/api/v1',
+    },
+    async (input, init) => {
+      const headers = new Headers(init?.headers);
+      requests.push({
+        method: init?.method ?? '',
+        pathname: new URL(String(input)).pathname,
+        body: JSON.parse(String(init?.body)),
+        authorization: headers.get('authorization'),
+        idempotencyKey: headers.get('idempotency-key'),
+      });
+      return new Response(JSON.stringify({ data: { saved: true } }), { status: 200 });
+    },
+  );
+  const session = await connectInMemory(api);
+  const id = '00000000-0000-4000-8000-000000000002';
+  const transactionDraft = {
+    kind: 'buy',
+    cardmarketProductId: 12345,
+    language: 'en',
+    date: '2026-09-28',
+    quantity: 1,
+    unitPriceCents: 2500,
+  };
+  try {
+    const writes = [
+      {
+        name: 'set_card_quantity',
+        arguments: { cardId: 'base1-001', language: 'en', variant: 'normal', quantity: 2 },
+      },
+      {
+        name: 'create_sealed_transaction',
+        arguments: {
+          idempotencyKey: 'mcp-create-20260928-0001',
+          expectedRevision: 3,
+          ...transactionDraft,
+        },
+      },
+      {
+        name: 'update_sealed_transaction',
+        arguments: { id, revision: 1, expectedRevision: 4, ...transactionDraft },
+      },
+      {
+        name: 'void_sealed_transaction',
+        arguments: { id, revision: 1, expectedRevision: 5 },
+      },
+    ];
+
+    for (const write of writes) {
+      const result = await session.client.callTool(write);
+      assert.equal(result.isError ?? false, false, `${write.name} should succeed`);
+    }
+
+    assert.deepEqual(requests, [
+      {
+        method: 'PUT',
+        pathname: '/api/v1/cards/base1-001',
+        body: { language: 'en', variant: 'normal', quantity: 2 },
+        authorization: `Bearer ${apiKey}`,
+        idempotencyKey: null,
+      },
+      {
+        method: 'POST',
+        pathname: '/api/v1/sealed/transactions',
+        body: { expectedRevision: 3, ...transactionDraft },
+        authorization: `Bearer ${apiKey}`,
+        idempotencyKey: 'mcp-create-20260928-0001',
+      },
+      {
+        method: 'PATCH',
+        pathname: `/api/v1/sealed/transactions/${id}`,
+        body: { revision: 1, expectedRevision: 4, ...transactionDraft },
+        authorization: `Bearer ${apiKey}`,
+        idempotencyKey: null,
+      },
+      {
+        method: 'POST',
+        pathname: `/api/v1/sealed/transactions/${id}/void`,
+        body: { revision: 1, expectedRevision: 5 },
+        authorization: `Bearer ${apiKey}`,
+        idempotencyKey: null,
+      },
+    ]);
+
+    const invalidCardQuantity = await session.client.callTool({
+      name: 'set_card_quantity',
+      arguments: { cardId: 'base1-001', language: 'en', variant: 'normal', quantity: 10_001 },
+    });
+    const invalidIdempotencyKey = await session.client.callTool({
+      name: 'create_sealed_transaction',
+      arguments: {
+        idempotencyKey: 'short',
+        expectedRevision: 3,
+        ...transactionDraft,
+      },
+    });
+    const missingUpdateRevision = await session.client.callTool({
+      name: 'update_sealed_transaction',
+      arguments: { id, revision: 0, expectedRevision: 4, ...transactionDraft },
+    });
+    const missingVoidRevision = await session.client.callTool({
+      name: 'void_sealed_transaction',
+      arguments: { id, revision: 1 },
+    });
+
+    assert.equal(invalidCardQuantity.isError, true);
+    assert.equal(invalidIdempotencyKey.isError, true);
+    assert.equal(missingUpdateRevision.isError, true);
+    assert.equal(missingVoidRevision.isError, true);
+    assert.equal(requests.length, 4);
+  } finally {
+    await session.close();
+  }
+});
+
+test('surfaces Lunidex write-permission errors without retrying the mutation', async () => {
+  let requests = 0;
+  const api = new LunidexApiClient(
+    { LUNIDEX_API_KEY: 'read-only-test-key' },
+    async () => {
+      requests += 1;
+      return new Response(
+        JSON.stringify({ error: { code: 'INSUFFICIENT_PERMISSION', message: 'This API key does not allow writes.' } }),
+        { status: 403 },
+      );
+    },
+  );
+  const session = await connectInMemory(api);
+  try {
+    const result = await session.client.callTool({
+      name: 'set_card_quantity',
+      arguments: { cardId: 'base1-001', language: 'en', variant: 'normal', quantity: 2 },
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(textContent(result), /INSUFFICIENT_PERMISSION/);
+    assert.equal(requests, 1);
   } finally {
     await session.close();
   }

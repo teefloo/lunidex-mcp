@@ -1,6 +1,6 @@
 # Lunidex MCP server
 
-A local, stdio-based MCP server that exposes the read-only Lunidex API to MCP clients. It uses the official TypeScript MCP SDK and forwards requests to `https://lunidex.app/api/v1` with a server-side Lunidex API key.
+A local, stdio-based MCP server that exposes Lunidex account reads and supported writes to MCP clients. It uses the official TypeScript MCP SDK and forwards requests to `https://lunidex.app/api/v1` with a server-side Lunidex API key.
 
 ## Design
 
@@ -27,7 +27,7 @@ npm run build
 
 ## Authentication
 
-Create a Lunidex API key with read permission and provide it through the MCP server process environment as `LUNIDEX_API_KEY`. The key is never a tool argument, is never logged by this server, and is not returned to the MCP client. A blank or absent key produces a `MISSING_API_KEY` tool error before any API request is made.
+Create a Lunidex API key with `read_write` permission to use all tools and provide it through the MCP server process environment as `LUNIDEX_API_KEY`. A read-only key can use the read tools; Lunidex rejects write tools with `INSUFFICIENT_PERMISSION`. The key is never a tool argument, is never logged by this server, and is not returned to the MCP client. A blank or absent key produces a `MISSING_API_KEY` tool error before any API request is made.
 
 Copy [`.env.example`](.env.example) only as a reference; the server does not read `.env` files automatically. Configure the environment through your MCP host’s secure server configuration. [The sample MCP client config](config/mcp-client.example.json) contains a placeholder only. Do not put a real key in source control, a prompt, or a client-visible tool argument.
 
@@ -39,7 +39,7 @@ Copy the shape in `config/mcp-client.example.json` into your MCP client configur
 
 The server communicates only over stdio. Standard output is reserved for MCP messages; it does not print startup banners or API data to stdout.
 
-## Read-only tools and resource
+## Tools and resource
 
 Each successful tool returns the Lunidex JSON envelope, including `data` and `meta` when present, as JSON text. The `lunidex://api/openapi` resource reads the public OpenAPI document without sending the account key. The API’s structured error `code` and `message` are returned in an MCP error result; error details and unrelated body fields are omitted. Any API key present in an upstream error message is redacted.
 
@@ -54,8 +54,12 @@ Each successful tool returns the Lunidex JSON envelope, including `data` and `me
 | `get_sealed_position` | `GET /sealed/positions/{productId}` | positive integer `productId` |
 | `list_sealed_transactions` | `GET /sealed/transactions` | `cursor`, `limit` (1–100), `language`, `productId`, `type` (`buy`, `sell`, `exchange`), `includeVoided`, `voided` |
 | `get_sealed_transaction` | `GET /sealed/transactions/{id}` | UUID `id` |
+| `set_card_quantity` | `PUT /cards/{cardId}` | `cardId`, `language`, `variant` (`unspecified`, `normal`, `reverse`, `holo`), absolute `quantity` (0–10,000; zero removes the holding) |
+| `create_sealed_transaction` | `POST /sealed/transactions` | Transaction draft, current `expectedRevision`, required `idempotencyKey` (8–200 characters) |
+| `update_sealed_transaction` | `PATCH /sealed/transactions/{id}` | UUID `id`, current transaction `revision`, current account `expectedRevision`, replacement transaction draft |
+| `void_sealed_transaction` | `POST /sealed/transactions/{id}/void` | UUID `id`, current transaction `revision`, current account `expectedRevision` |
 
-Opaque cursors are passed through unchanged. Catalogue query length counts Unicode code points, with a maximum of 150. The server does not expose write, update, delete, transaction-creation, or void operations. The Lunidex API’s own rate limits still apply.
+Opaque cursors are passed through unchanged. Catalogue query length counts Unicode code points, with a maximum of 150. Transaction create and update inputs use the Lunidex API’s transaction draft fields, including product, language, date, quantity, prices, fees, exchange details, and allocation method where applicable. Revision fields let the API reject stale edits. The required creation idempotency key can be reused if the caller retries the same request. Other write calls are not automatically retried. Write tools change the authenticated account’s data; the Lunidex API’s own validation and rate limits still apply. The MCP exposes only writes supported by the public Lunidex API and does not expose a delete operation.
 
 ## Development checks
 

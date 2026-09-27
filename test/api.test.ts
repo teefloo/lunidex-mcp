@@ -44,6 +44,80 @@ test('uses the configured bearer key for GET requests and preserves the API enve
   );
 });
 
+test('sends supported JSON writes with the bearer key and transaction idempotency header', async () => {
+  const requests: Array<{ url: URL; init: RequestInit }> = [];
+  const client = new LunidexApiClient(
+    {
+      LUNIDEX_API_KEY: mockBearer,
+      LUNIDEX_API_BASE_URL: 'http://127.0.0.1:43120/api/v1',
+    },
+    async (input, init) => {
+      requests.push({ url: new URL(String(input)), init: init ?? {} });
+      return jsonResponse({ data: { saved: true } });
+    },
+  );
+  const cardBody = { language: 'en', variant: 'normal', quantity: 2 };
+  const transactionBody = {
+    expectedRevision: 3,
+    kind: 'buy',
+    cardmarketProductId: 12345,
+    language: 'en',
+    date: '2026-09-28',
+    quantity: 1,
+    unitPriceCents: 2500,
+  };
+
+  await client.put('cards/base1-001', cardBody);
+  await client.post('sealed/transactions', transactionBody, {
+    idempotencyKey: 'mcp-create-20260928-0001',
+  });
+  await client.patch('sealed/transactions/00000000-0000-4000-8000-000000000002', {
+    ...transactionBody,
+    revision: 1,
+  });
+
+  assert.deepEqual(
+    requests.map(({ url, init }) => ({
+      method: init.method,
+      pathname: url.pathname,
+      body: JSON.parse(String(init.body)),
+      authorization: new Headers(init.headers).get('authorization'),
+      contentType: new Headers(init.headers).get('content-type'),
+      idempotencyKey: new Headers(init.headers).get('idempotency-key'),
+      cache: init.cache,
+    })),
+    [
+      {
+        method: 'PUT',
+        pathname: '/api/v1/cards/base1-001',
+        body: cardBody,
+        authorization: `Bearer ${mockBearer}`,
+        contentType: 'application/json',
+        idempotencyKey: null,
+        cache: 'no-store',
+      },
+      {
+        method: 'POST',
+        pathname: '/api/v1/sealed/transactions',
+        body: transactionBody,
+        authorization: `Bearer ${mockBearer}`,
+        contentType: 'application/json',
+        idempotencyKey: 'mcp-create-20260928-0001',
+        cache: 'no-store',
+      },
+      {
+        method: 'PATCH',
+        pathname: '/api/v1/sealed/transactions/00000000-0000-4000-8000-000000000002',
+        body: { ...transactionBody, revision: 1 },
+        authorization: `Bearer ${mockBearer}`,
+        contentType: 'application/json',
+        idempotencyKey: null,
+        cache: 'no-store',
+      },
+    ],
+  );
+});
+
 test('requires a non-blank key and does not make an API request when it is missing', async () => {
   let wasCalled = false;
   const client = new LunidexApiClient({ LUNIDEX_API_KEY: '  ' }, async () => {

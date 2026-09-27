@@ -2,7 +2,7 @@
   "name": "lunidex-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "Read-only MCP server for the Lunidex API",
+  "description": "MCP server for reading and writing supported Lunidex API data",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"

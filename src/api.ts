@@ -144,20 +144,51 @@ export class LunidexApiClient {
   ) {}
 
   async get(path: string, query: Query = {}): Promise<unknown> {
+    return this.request('GET', path, undefined, query);
+  }
+
+  async put(path: string, body: unknown): Promise<unknown> {
+    return this.request('PUT', path, body);
+  }
+
+  async post(
+    path: string,
+    body: unknown,
+    options: { idempotencyKey?: string } = {},
+  ): Promise<unknown> {
+    return this.request('POST', path, body, {}, options.idempotencyKey);
+  }
+
+  async patch(path: string, body: unknown): Promise<unknown> {
+    return this.request('PATCH', path, body);
+  }
+
+  private async request(
+    method: 'GET' | 'PUT' | 'POST' | 'PATCH',
+    path: string,
+    body?: unknown,
+    query: Query = {},
+    idempotencyKey?: string,
+  ): Promise<unknown> {
     const { apiBaseUrl, apiKey } = readLunidexConfig(this.env);
     const url = new URL(path.replace(/^\/+/, ''), apiBaseUrl);
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
+    const headers = new Headers({
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    });
+    if (body !== undefined) headers.set('Content-Type', 'application/json');
+    if (idempotencyKey !== undefined) headers.set('Idempotency-Key', idempotencyKey);
+
     let response: Response;
     try {
       response = await this.fetcher(url, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         cache: 'no-store',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
